@@ -267,6 +267,28 @@ postprocessPage = !->
                 line.addEventListener \mouseleave, ..
 
 
+getBootData = ->
+    root = $id \hero_block
+    unless root?
+        return
+            updatedAgo: 0
+            stepDuration: 18
+
+    updatedAgo = parseFloat root.dataset.updatedAgo
+    stepDuration = parseFloat root.dataset.stepDuration
+    duelType = root.dataset.duelType
+
+    unless isFinite updatedAgo
+        updatedAgo = 0
+    unless isFinite(stepDuration) && stepDuration > 1e-5
+        stepDuration = 18
+
+    if duelType? && duelType.length
+        window.gDuelType = duelType
+
+    {updatedAgo, stepDuration}
+
+
 socket = null
 retryEvery = 3s
 retryCount = 0
@@ -323,6 +345,7 @@ addEventListener \unload, disconnect
 
 <-! addEventListener \DOMContentLoaded
 
+boot = getBootData!
 postprocessPage!
-runProgressTimer gUpdatedAgo, gStepDuration
+runProgressTimer boot.updatedAgo, boot.stepDuration
 connect!
