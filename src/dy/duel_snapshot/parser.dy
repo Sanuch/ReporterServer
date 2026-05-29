@@ -20,7 +20,7 @@ if (__traits(compiles, "protocolVersion" in f))
     DuelSnapshot snap
     const protocolVersionRaw = f._loadOptional!int("protocolVersion", 0)
     snap.protocolVersion = protocolVersionRaw
-    
+
     switch (protocolVersionRaw)
         case 4:
             if (const p = "clientData" in f)
@@ -269,32 +269,32 @@ private DuelType _phaseToDuelType(const(char)[] phase) pure
 private void _validateV4Chronicle(const(char)[] chronicle)
     // For v4, chronicle MUST contain per-line step metadata.
     // Check for specific HTML patterns: data-t attribute, d_turn div, or step class markers.
-    
+
     import std.string: indexOf;
-    
+
     // Must contain at least one new_line entry
     if (chronicle.indexOf("new_line") == -1)
         logWarn("v4 chronicle has no step entries (new_line not found)")
         return // Empty chronicle is acceptable
-    
+
     // Check for data-t attribute pattern (most reliable)
     if (chronicle.indexOf("data-t=\"") != -1 || chronicle.indexOf("data-t='") != -1)
         return // Has data-t attribute
-    
+
     // Check for d_turn div element (must be preceded by < and followed by > or space)
     // This avoids matching "d_turn" in text content
     import std.regex;
     static auto rx_dturn = regex("<[^>]*class=\"[^\"]*d_turn[^\"]*\"[^>]*>", "i");
     if (!chronicle.match(rx_dturn).empty)
         return // Has d_turn div element
-    
+
     // Check for step class markers like t0, t1, ... t9 in class attributes
     foreach (i; 0 .. 10)
         import std.conv: to;
         const pattern = " t" ~ to!string(i) ~ " \"";
         if (chronicle.indexOf(pattern) != -1)
             return
-    
+
     logWarn("v4 chronicle: no step metadata markers found (data-t, d_turn div, or tN class)")
     throw new HTTPStatusException(HTTPStatus.badRequest,
         "v4 protocol requires per-line step metadata in chronicle")
