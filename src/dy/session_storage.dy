@@ -72,7 +72,9 @@ struct SessionStorage
         import preproc
 
         if (auto session = snap.id in _aa)
-            if (snap.step <= session.log.step)
+            // Some streams can switch duel mode with a step counter reset.
+            // Accept such transitions even when step does not increase.
+            if (snap.step <= session.log.step && snap.duelType == session.log.duelType)
                 return SubmissionStatus.ignored
 
             _removeFromTree(session)

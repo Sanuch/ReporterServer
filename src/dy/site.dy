@@ -16,6 +16,22 @@ final class Site
 
     private ss.SessionStorage _storage
 
+    private void _emitSecurityHeaders()
+        // Harden browser-side behavior for all dynamic responses.
+        header("Content-Security-Policy",
+            "default-src 'self'; " ~
+            "script-src 'self' https://cdnjs.cloudflare.com; " ~
+            "style-src 'self' 'unsafe-inline'; " ~
+            "img-src 'self' data:; " ~
+            "connect-src 'self' ws: wss:; " ~
+            "font-src 'self' data:; " ~
+            "frame-ancestors 'none'; " ~
+            "base-uri 'self'; " ~
+            "form-action 'self'")
+        header("X-Frame-Options", "DENY")
+        header("X-Content-Type-Options", "nosniff")
+        header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
     private void _emitBasicCORSHeaders()
         header("Access-Control-Allow-Origin", "*")
 
@@ -26,14 +42,20 @@ final class Site
         import std.conv
 
         enum oneDay = 24.hours.total!q{seconds}.to!string
+        _emitSecurityHeaders()
         _emitBasicCORSHeaders()
         header("Access-Control-Allow-Methods", "OPTIONS, POST")
+        header("Access-Control-Allow-Headers", "Content-Type")
         header("Access-Control-Max-Age", oneDay)
         res.writeVoidBody()//Otherwise, 404 is emitted.
 
     void postSend(scope HTTPServerRequest req) @system
         import duel_snapshot.parser: parseSnapshot = parse
 
+        _emitSecurityHeaders()
+        // Must be sent even on validation failures, otherwise browser clients
+        // treat backend errors as opaque CORS failures.
+        _emitBasicCORSHeaders()
         const snap = parseSnapshot(req)
         _storage.dropOldSessions(_expirationPeriod)
         final switch (_storage.submit(snap)) with (ss.SubmissionStatus)
@@ -41,10 +63,10 @@ final class Site
             case ignored: logDiagnostic("Ignoring duplicate %s", snap.id); break
             case created: logInfo("Streaming %s with %s", snap.id, snap.agent); break
 
-        _emitBasicCORSHeaders()
         render!("send.dt", snap)
 
     void get() @system
+        _emitSecurityHeaders()
         render!"index.dt"
 
     void getDuels()
@@ -58,6 +80,7 @@ final class Site
 
     @path("/duels/log/:id") \
     void getDuelsLog(string _id) @system
+        _emitSecurityHeaders()
         _storage.dropOldSessions(_expirationPeriod)
         if (auto session = _id in _storage)
             const log = &session.log
@@ -72,6 +95,7 @@ final class Site
     void getWS(string _id, scope WebSocket socket) nothrow
         import std.algorithm.comparison
         import std.array
+        import std.conv
 
         import vibe.data.json
 
@@ -112,7 +136,13 @@ final class Site
                 response["allies"] = log.allies
                 response["map"] = log.map
                 response["chronicle"] = log.chronicle
+                response["opponent"] = log.opponent
+                auto condArr = Json.emptyArray
+                foreach (c; log.conditions)
+                    condArr ~= Json(c)
+                response["conditions"] = condArr
                 response["clientData"] = log.clientData
+                response["duelType"] = Json(log.duelType.to!string)
 
                 app.clear()
                 app.writeJsonString(response)

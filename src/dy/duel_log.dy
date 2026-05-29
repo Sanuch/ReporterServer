@@ -1,5 +1,7 @@
 import vibe.data.json
 
+import duel_snapshot.model: DuelType
+
 
 struct DuelLog
     string host
@@ -7,7 +9,15 @@ struct DuelLog
     int step
     float stepDuration
     string allies, map, chronicle//HTML.
+    string opponent//HTML block for boss opponent panel.
+    string[] conditions
     Json clientData
+    DuelType duelType
+    string phase
+    int protocolVersion = 3
 
     @property size_t space() const nothrow pure @safe @nogc
-        return allies.length + map.length + chronicle.length + 300
+        size_t condLen = 0
+        foreach (c; conditions)
+            condLen += c.length
+        return allies.length + map.length + chronicle.length + opponent.length + condLen + 300

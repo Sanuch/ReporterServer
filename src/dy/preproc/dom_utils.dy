@@ -66,8 +66,21 @@ void removeDangerousAttrs(Node node) \
 in
     assert(node !is null)
 do
+    bool isAllowedUrl(const(char)[ ] value)
+        import std.string: stripLeft, startsWith, toLower
+
+        const s = toLower(stripLeft(value))
+        return s.startsWith("http://") || s.startsWith("https://")
+
     foreach (name; node.attrs.byKey())
-        if (name.startsWith("on") /+HTML event handlers.+/ || name.startsWith("data-vivaldi-"))
+        import std.string: toLower
+
+        const normalized = toLower(name)
+        if (normalized.startsWith("on") /+HTML event handlers.+/ || normalized.startsWith("data-vivaldi-"))
+            node.removeAttr(name)
+        else if (normalized.among(
+            "href", "src", "xlink:href", "action", "formaction", "poster",
+        ) && !isAllowedUrl(node[name]))
             node.removeAttr(name)
 
 

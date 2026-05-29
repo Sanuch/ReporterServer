@@ -16,12 +16,27 @@ DuelSnapshot parse(scope HTTPServerRequest req)
 
     DuelSnapshot snap
     const f = req.form
-    switch (f.get("protocolVersion").to!int.ifThrown!ConvException(0))
+    const protocolVersionRaw = f.get("protocolVersion").to!int.ifThrown!ConvException(0)
+    snap.protocolVersion = protocolVersionRaw
+    
+    switch (protocolVersionRaw)
+        case 4:
+            if (const p = "clientData" in f)
+                try
+                    snap.clientData = parseJsonString((*p).to!string)
+                catch (JSONException)
+                    _httpEnforce("'clientData' must be valid JSON")
+            snap.phase = f._load("phase")
+            _httpEnforce(
+                snap.phase == "boss" || snap.phase == "dungeon" || snap.phase == "sail",
+                "'phase' must be one of: boss, dungeon, sail")
+            goto case
         case 3:
-            try
-                snap.clientData = parseJsonString(f._load("clientData"))
-            catch (JSONException)
-                _httpEnforce("'clientData' must be valid JSON")
+            if (protocolVersionRaw == 3)
+                try
+                    snap.clientData = parseJsonString(f._load("clientData"))
+                catch (JSONException)
+                    _httpEnforce("'clientData' must be valid JSON")
             goto case
         case 2:
             snap.timezone      = f._load!int("timezone")
@@ -39,19 +54,46 @@ DuelSnapshot parse(scope HTTPServerRequest req)
     //Fields common for all versions:
     const rawLink     = f._load("link")
     const link        = _splitLink(rawLink)
+    _httpEnforce(_isAllowedHost(link.host), "Unsupported host in 'link'")
     snap.agent        = f._load("agent")
     snap.host         = link.host
     snap.id           = link.id
     snap.stepDuration = f._load!float("stepDuration")
     snap.step         = f._load!int("step")
-    snap.cargo        = f._load("cargo")
+    if (const p = "cargo" in f)
+        snap.cargo    = (*p).to!string
+    else
+        snap.cargo    = null
 
     const payload = f._load("data")
     const headerLength = snap.agent.length + rawLink.length + snap.cargo.length
-    if (headerLength > 256 || payload.length > 60 << 10)
+    // Dungeon/boss snapshots can carry long chronicles; keep a strict but
+    // practical cap to avoid false rejections while preserving abuse limits.
+    if (headerLength > 256 || payload.length > 128 << 10)
         logWarn("Declined a request of %.1f KB", (headerLength + payload.length) / 1024.)
         throw new HTTPStatusException(HTTPStatus.requestEntityTooLarge)
     () @trusted { _decodePayload(snap, payload, Yes.useBase64) }()
+
+    //For v4, validate extracted data fields.
+    if (snap.protocolVersion >= 4)
+        if (snap.phase == "dungeon" || snap.phase == "sail")
+            _httpEnforce(snap.map.length > 0, "'map' is required for dungeon and sail phases")
+        if (snap.opponent.length > 64 << 10)
+            logWarn("Declined an oversized opponent HTML of %.1f KB", snap.opponent.length / 1024.)
+            throw new HTTPStatusException(HTTPStatus.requestEntityTooLarge)
+
+    //For v4+, duelType is explicit via phase. For earlier versions, detect from HTML.
+    if (snap.protocolVersion >= 4)
+        snap.duelType = _phaseToDuelType(snap.phase)
+    else
+        //Detect dungeon by grid map; detect boss by absent SVG and absent grid (empty/hidden map block).
+        import std.string: indexOf
+        if (snap.map.indexOf(`role="grid"`) != -1)
+            snap.duelType = DuelType.dungeon
+        else if (snap.map.indexOf("<svg") == -1)
+            snap.duelType = DuelType.boss
+        else
+            snap.duelType = DuelType.sail
 
     //Be careful to handle NaNs.
     _httpEnforce(snap.stepDuration >= 1e-6f, "'stepDuration' must be positive")
@@ -62,12 +104,7 @@ DuelSnapshot parse(scope HTTPServerRequest req)
 
 
 private:
-
-Appender!(ubyte[ ]) _ubyteApp//Used to decode a request when it is in Base64.
-
-static this() nothrow
-    _ubyteApp.reserve(32_768)
-
+private enum _payloadSeparator = "<&>"
 
 void _httpEnforce(HTTPStatus status, string msg)
     throw new HTTPStatusException(status, msg)
@@ -107,31 +144,51 @@ Tuple!(string, q{host}, string, q{id}) _splitLink(string link) pure
     return typeof(return)(host, link[~pos ? pos + 1 : 0 .. $])
 
 
+bool _isAllowedHost(const(char)[ ] host) pure
+    import std.algorithm.searching: canFind
+    import std.string: stripRight, toLower
+
+    static immutable allowedHosts = [
+        "https://godville.net",
+        "https://godvillegame.com",
+        "https://b.godville.net",
+        "http://godville.net",
+        "http://godvillegame.com",
+        "http://b.godville.net",
+    ]
+    const normalizedHost = stripRight(toLower(host), "/")
+    return allowedHosts.canFind(normalizedHost)
+
+
 void _decodePayload(ref DuelSnapshot snap, const(char)[ ] raw, Flag!q{useBase64} useBase64) @system
     import std.algorithm
     import std.base64
+    import core.exception: OutOfMemoryError
     import std.range
-    import zlib = zlib: ZlibException, ZlibTooLarge
+    import std.string: count
+    import std.zlib: stdUncompress = uncompress, ZlibException
 
-    const(void)[ ] decoded = raw
+    const(ubyte)[ ] decoded
     if (useBase64)
-        _ubyteApp.clear()
         try
-            Base64.decode(raw, _ubyteApp)
-            decoded = _ubyteApp.data
+            decoded = Base64.decode(raw)
         catch (Base64Exception e)
             logWarn("Base64 error: %s", e.msg)
             throw new HTTPStatusException(HTTPStatus.badRequest)
+    else
+        decoded = cast(const(ubyte)[])raw
 
     string concatenated
     try
-        //A cast to `immutable(char)[ ]` is safe as `uncompress` allocates a new buffer.
-        //We expect a compression ratio of about 20x-30x, so choose the buffer size accordingly.
-        concatenated = cast(string)zlib.uncompress(decoded, 1 << 20, decoded.length << 5)
+        concatenated = cast(string)stdUncompress(decoded)
     catch (ZlibException e)
         logWarn("Zlib decompression error: %s", e.msg)
         throw new HTTPStatusException(HTTPStatus.badRequest)
-    catch (ZlibTooLarge)
+    catch (OutOfMemoryError)
+        logWarn("Declined a zip bomb of %.1f KB", raw.length / 1024.)
+        throw new HTTPStatusException(HTTPStatus.requestEntityTooLarge)
+
+    if (concatenated.length > 1 << 20)
         logWarn("Declined a zip bomb of %.1f KB", raw.length / 1024.)
         throw new HTTPStatusException(HTTPStatus.requestEntityTooLarge)
 
@@ -141,8 +198,97 @@ void _decodePayload(ref DuelSnapshot snap, const(char)[ ] raw, Flag!q{useBase64}
         concatenated.length * (1. / 1024),
         float(concatenated.length) / decoded.length)
 
-    string[3] htmls
-    concatenated.splitter("<&>").take(3).copy(htmls[ ])
-    snap.allies    = htmls[0]
-    snap.map       = htmls[1]
-    snap.chronicle = htmls[2]
+    if (snap.protocolVersion >= 4)
+        _decodeV4JsonPayload(snap, concatenated)
+        _validateV4Chronicle(snap.chronicle)
+    else
+        // Valid v1-v3 snapshots contain three HTML chunks separated by "<&>".
+        if (concatenated.count(_payloadSeparator) < 2)
+            logWarn("Malformed payload layout from %d-byte archive", decoded.length)
+            throw new HTTPStatusException(HTTPStatus.badRequest)
+
+        string[3] htmls
+        concatenated.splitter(_payloadSeparator).take(3).copy(htmls[ ])
+        snap.allies    = htmls[0]
+        snap.map       = htmls[1]
+        snap.chronicle = htmls[2]
+
+
+void _decodeV4JsonPayload(ref DuelSnapshot snap, string json) @system
+    import vibe.data.json: Json, JSONException, parseJsonString
+
+    Json j
+    try
+        j = parseJsonString(json)
+    catch (JSONException)
+        _httpEnforce("'data' must contain valid JSON for protocol v4")
+
+    _httpEnforce(("allies" in j) !is null, "Missing 'allies' in data")
+    _httpEnforce(("chronicle" in j) !is null, "Missing 'chronicle' in data")
+
+    try
+        snap.allies = j["allies"].get!string
+        snap.chronicle = j["chronicle"].get!string
+
+        if (("map" in j) !is null)
+            snap.map = j["map"].get!string
+
+        if (("opponent" in j) !is null)
+            snap.opponent = j["opponent"].get!string
+
+        if (("conditions" in j) !is null)
+            foreach (elem; j["conditions"])
+                snap.conditions ~= elem.get!string
+    catch (Exception)
+        _httpEnforce("Invalid field types in data payload")
+
+    _httpEnforce(snap.conditions.length <= 64, "Too many conditions (max 64)")
+    foreach (c; snap.conditions)
+        _httpEnforce(c.length <= 256, "Condition string too long (max 256 bytes)")
+
+
+private DuelType _phaseToDuelType(const(char)[] phase) pure
+    switch (phase)
+        case "boss":
+            return DuelType.boss
+        case "dungeon":
+            return DuelType.dungeon
+        case "sail":
+            return DuelType.sail
+        default:
+            // Should not happen if parser validation is correct
+            return DuelType.sail
+
+
+private void _validateV4Chronicle(const(char)[] chronicle)
+    // For v4, chronicle MUST contain per-line step metadata.
+    // Check for specific HTML patterns: data-t attribute, d_turn div, or step class markers.
+    
+    import std.string: indexOf;
+    
+    // Must contain at least one new_line entry
+    if (chronicle.indexOf("new_line") == -1)
+        logWarn("v4 chronicle has no step entries (new_line not found)")
+        return // Empty chronicle is acceptable
+    
+    // Check for data-t attribute pattern (most reliable)
+    if (chronicle.indexOf("data-t=\"") != -1 || chronicle.indexOf("data-t='") != -1)
+        return // Has data-t attribute
+    
+    // Check for d_turn div element (must be preceded by < and followed by > or space)
+    // This avoids matching "d_turn" in text content
+    import std.regex;
+    static auto rx_dturn = regex("<[^>]*class=\"[^\"]*d_turn[^\"]*\"[^>]*>", "i");
+    if (!chronicle.match(rx_dturn).empty)
+        return // Has d_turn div element
+    
+    // Check for step class markers like t0, t1, ... t9 in class attributes
+    foreach (i; 0 .. 10)
+        import std.conv: to;
+        const pattern = " t" ~ to!string(i) ~ " \"";
+        if (chronicle.indexOf(pattern) != -1)
+            return
+    
+    logWarn("v4 chronicle: no step metadata markers found (data-t, d_turn div, or tN class)")
+    throw new HTTPStatusException(HTTPStatus.badRequest,
+        "v4 protocol requires per-line step metadata in chronicle")

@@ -3,6 +3,12 @@ import std.typecons
 import vibe.data.json
 
 
+enum DuelType : ubyte
+    sail,
+    dungeon,
+    boss,
+
+
 struct DuelSnapshot
     string agent
     string host, id
@@ -13,4 +19,9 @@ struct DuelSnapshot
     Nullable!(int, -1) streamerIndex
     string cargo
     string allies, map, chronicle//HTML.
+    string opponent//HTML block for boss opponent panel (v4).
+    string[] conditions
     Json   clientData
+    DuelType duelType
+    string phase//v4: "boss", "dungeon", "sail"
+    int    protocolVersion = 3

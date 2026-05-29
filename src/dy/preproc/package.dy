@@ -8,7 +8,7 @@ import html
 import vibe.core.log
 
 import duel_log
-import duel_snapshot.model
+import duel_snapshot.model: DuelSnapshot, DuelType
 import du = preproc.dom_utils: _s, _text
 import u  = preproc.utils: maybeTo, containsWord, _rx, _stableApp
 
@@ -28,9 +28,14 @@ void applySnapshot(ref DuelLog log, ref const DuelSnapshot snap) @trusted
     log.id = snap.id
     log.step = snap.step
     log.stepDuration = snap.stepDuration
+    log.duelType = snap.duelType
+    log.phase = snap.phase
+    log.protocolVersion = snap.protocolVersion
     log.allies = p.process!`Allies`(snap.allies)
     log.map = p.process!`Map`(snap.map)
     log.chronicle = p.process!`Chronicle`(snap.chronicle)
+    log.opponent = p.process!`Opponent`(snap.opponent)
+    log.conditions = snap.conditions.dup
     log.clientData = snap.clientData
 
 
@@ -45,6 +50,11 @@ private struct _Preprocessor
         import std.utf
 
         try
+            auto trimmed = html.strip()
+            if (trimmed.empty || trimmed[0] != '<' || !trimmed.canFind('>'))
+                logWarn(`Skipping malformed HTML in "` ~ func ~ `" block`)
+                return html
+
             auto doc = createDocument(html)
             _stableApp.clear()
             try
@@ -62,6 +72,7 @@ private struct _Preprocessor
 
     void processAllies(Document doc)
         du.removeEverythingDangerous(doc)
+        int playerIdx = 0
         foreach (line; doc.querySelectorAll(_s!".oppl"))
             //Remove a personal message (friend) link.
             doc.querySelectorAll(_s!".pm_link", line).each!(du.queueDestroy)
@@ -74,19 +85,25 @@ private struct _Preprocessor
                 node.removeAttr("data-ecss")
 
             if (const heroNode = doc.querySelector(_s!".opp_n", line))
-                //Extract player index and hero's name.
-                const info = u.extractHeroIndexAndName(_text(heroNode))
-                const i = info.index
-                if (i < 0)
-                    //Can't know which player it is, no reason to go further.
-                    continue
-                players[i].heroName = info.heroName.idup
+                int i
+                if (snap.duelType == DuelType.dungeon || snap.duelType == DuelType.boss)
+                    //Dungeon and boss allies have no numbered prefixes; use sequential index.
+                    i = playerIdx++ & 0x3
+                    players[i].heroName = _text(heroNode).strip().idup
+                else
+                    //Sail allies use "N. Name" format.
+                    const info = u.extractHeroIndexAndName(_text(heroNode))
+                    i = info.index
+                    if (i < 0)
+                        //Can't know which player it is, no reason to go further.
+                        continue
+                    players[i].heroName = info.heroName.idup
 
                 //Extract HP.
                 if (const hpNode = doc.querySelector(_s!".opp_h", line))
                     players[i].hp = u.extractHeroHp(_text(hpNode))
-                    if (players[i].hp.cur > 0)
-                        //Colorize player's line.
+                    if (players[i].hp.cur > 0 && snap.duelType == DuelType.sail)
+                        //Colorize player's line (sail only).
                         line["class"] = u.concat(
                             line["class"],
                             u.format!" saild_%s"(i + 1),
@@ -129,14 +146,17 @@ private struct _Preprocessor
 
         du.removeEverythingDangerous(doc)
 
+        if (snap.duelType == DuelType.dungeon || snap.duelType == DuelType.boss)
+            normalizeChronicleLines(doc)
+
         //Remove social networks' links.
         doc.querySelectorAll(_s!".d_line_links").each!(du.queueDestroy)
 
         foreach (node; doc.querySelectorAll(_s!".d_line"))
             //Remove custom styling, showing partially hidden text.
             node.removeAttr("style")
-            //Assign streamer's color to white entries.
-            if (!snap.streamerIndex.isNull)
+            //Assign streamer's color to white entries (sail only).
+            if (snap.duelType == DuelType.sail && !snap.streamerIndex.isNull)
                 const classes = node["class"]
                 if (!classes.splitter().canFind!(cls => cls.startsWith("saild_")))
                     node["class"] = u.concat(
@@ -178,7 +198,47 @@ private struct _Preprocessor
         //Remove extra whitespace between tags.
         du.removeExtraWhitespace(doc)
 
+    void normalizeChronicleLines(Document doc)
+        foreach (line; doc.querySelectorAll(_s!".line"))
+            if (line["id"] != "turn_pbar" && !line["class"].containsWord("pbar"))
+                normalizeChronicleLine(doc, line)
+
+    void normalizeChronicleLine(Document doc, Node line)
+        auto classes = line["class"]
+        if (!classes.containsWord("d_line"))
+            line["class"] = classes.empty ? "d_line" : u.concat(classes, " d_line")
+
+        if (doc.querySelector(_s!".d_msg", line))
+            return
+
+        Node[ ] children
+        for (Node child; (child = line.firstChild) !is null; )
+            child.detach()
+            children ~= child
+
+        Node timeNode
+        foreach (child; children)
+            if (child.isElementNode && child["class"].containsWord("d_time"))
+                timeNode = child
+                break
+
+        if (timeNode !is null)
+            line.appendChild(timeNode)
+
+        auto msgNode = doc.createElement("div", line)
+        msgNode["class"] = "d_msg"
+        foreach (child; children)
+            if (child !is timeNode)
+                msgNode.appendChild(child)
+
     void processMap(Document doc)
+        if (snap.duelType == DuelType.dungeon)
+            processDungeonMap(doc)
+            return
+        if (snap.duelType == DuelType.boss)
+            processBossMap(doc)
+            return
+
         import std.ascii: isDigit
         import std.math: hypot, isNaN
         import std.uni: isSpace
@@ -344,3 +404,45 @@ private struct _Preprocessor
 
         if (prevTile !is null)
             du.updateTileTooltip(doc, prevTile, y, x, tileSize, prevTitleNode, player, snap.cargo)
+
+    void processDungeonMap(Document doc)
+        du.removeEverythingDangerous(doc)
+
+        //Normalize map ID: #map → #s_map for compatibility with client JS.
+        if (auto mapNode = doc.querySelector(_s!"#map"))
+            mapNode["id"] = "s_map"
+
+        //Remove control buttons from the header.
+        if (auto header = du.findHeader(doc))
+            du.removeControlButtons(header)
+
+        //Remove extra whitespace between tags.
+        du.removeExtraWhitespace(doc)
+
+    void processBossMap(Document doc)
+        du.removeEverythingDangerous(doc)
+
+        //Normalize map ID: #map → #s_map for compatibility with client JS.
+        if (auto mapNode = doc.querySelector(_s!"#map"))
+            mapNode["id"] = "s_map"
+
+        //Remove control buttons from the header.
+        if (auto header = du.findHeader(doc))
+            du.removeControlButtons(header)
+
+        //Remove extra whitespace between tags.
+        du.removeExtraWhitespace(doc)
+
+    void processOpponent(Document doc)
+        du.removeEverythingDangerous(doc)
+
+        // Normalize opponent block ID for live updates.
+        if (auto node = doc.querySelector(_s!"#opps"))
+            node["id"] = "s_boss"
+
+        //Remove control buttons from the header if present.
+        if (auto header = du.findHeader(doc))
+            du.removeControlButtons(header)
+
+        //Remove extra whitespace between tags.
+        du.removeExtraWhitespace(doc)
