@@ -7,7 +7,7 @@ import su = site_utils
 
 @safe:
 
-private /+immutable+/ string[2] _addresses = ["::1", "127.0.0.1"]
+private /+immutable+/ string[] _addresses = ["::1", "127.0.0.1"]
 private ushort _port = 8000
 private size_t _maxMemory
 
@@ -23,6 +23,10 @@ private void _parseArguments() @system
     readOption("p|port", &_port, "Port to listen to (default: 8000).")
     readOption("prefix", &su.prefix, "Prefix for site's root URL (default: /).")
     readOption("max-memory", &maxMemory, "Limit for temporary log storage (default: 128M).")
+    string bind = ""
+    readOption("bind", &bind, "Override bind address (e.g. 0.0.0.0 for all interfaces).")
+    if (!bind.empty)
+        _addresses = [bind]
 
     if (!su.prefix.empty && su.prefix[0] != '/')
         throw new Exception("prefix must start with a '/'")
@@ -67,6 +71,7 @@ private void _configure()
 
 int main() @system
     import std.encoding
+    import std.process : environment
 
     version (DigitalMars)
         import etc.linux.memoryerror
@@ -91,7 +96,10 @@ int main() @system
         return 4
 
     try
-        lowerPrivileges()
+        // Some container runtimes crash inside lowerPrivileges();
+        // keep default hardening unless explicitly disabled by env var.
+        if (environment.get("GVREPSRV_NO_PRIVDROP", "") != "1")
+            lowerPrivileges()
         return runEventLoop()
     catch (Throwable th)
         logFatal("%s", th.msg)
