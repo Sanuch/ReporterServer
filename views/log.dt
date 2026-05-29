@@ -5,8 +5,8 @@ prepend title
 
 append head
   script(type="text/javascript",
-    src="https://cdnjs.cloudflare.com/ajax/libs/pako/1.0.6/pako_inflate.min.js",
-    integrity="sha384-vfctOCT+kAyhRRvZr0t63Ktb6zOZrCbLW9CIyQr9G4UMhKAabPpM3iDOI2lnXsX4",
+    src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako_inflate.min.js",
+    integrity="sha512-mlnC6JeOvg9V4vBpWMxGKscsCdScB6yvGVCeFF2plnQMRmwH69s9F8SHPbC0oirqfePmRBhqx2s3Bx7WIvHfWg==",
     crossorigin="anonymous")
   - script("log");
   - stylesheet("log");
