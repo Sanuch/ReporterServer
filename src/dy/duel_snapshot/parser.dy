@@ -10,13 +10,15 @@ import duel_snapshot.model
 @safe:
 
 DuelSnapshot parse(scope HTTPServerRequest req)
-    import std.exception
+    return _parseFromForm(req.form)
 
+
+private DuelSnapshot _parseFromForm(Dict)(auto ref const Dict f) \
+if (__traits(compiles, "protocolVersion" in f))
     import vibe.data.json
 
     DuelSnapshot snap
-    const f = req.form
-    const protocolVersionRaw = f.get("protocolVersion").to!int.ifThrown!ConvException(0)
+    const protocolVersionRaw = f._loadOptional!int("protocolVersion", 0)
     snap.protocolVersion = protocolVersionRaw
     
     switch (protocolVersionRaw)
@@ -117,6 +119,16 @@ void _httpEnforce(bool condition, lazy string msg)
         _httpEnforce(msg)
 
 
+T _loadOptional(T, Dict)(auto ref const Dict dict, string field, lazy T fallback) \
+if (__traits(compiles, dict[field].to!T))
+    if (const p = field in dict)
+        try
+            return (*p).to!T
+        catch (ConvException)
+            return fallback
+    return fallback
+
+
 T _load(T = string, Dict)(auto ref const Dict dict, string field) \
 if (__traits(compiles, dict[field].to!T))
     const p = field in dict
@@ -163,10 +175,9 @@ bool _isAllowedHost(const(char)[ ] host) pure
 void _decodePayload(ref DuelSnapshot snap, const(char)[ ] raw, Flag!q{useBase64} useBase64) @system
     import std.algorithm
     import std.base64
-    import core.exception: OutOfMemoryError
     import std.range
     import std.string: count
-    import std.zlib: stdUncompress = uncompress, ZlibException
+    import zlib: uncompress, ZlibException, ZlibTooLarge
 
     const(ubyte)[ ] decoded
     if (useBase64)
@@ -180,17 +191,13 @@ void _decodePayload(ref DuelSnapshot snap, const(char)[ ] raw, Flag!q{useBase64}
 
     string concatenated
     try
-        concatenated = cast(string)stdUncompress(decoded)
+        concatenated = cast(string)uncompress(decoded, 1 << 20, decoded.length << 5)
+    catch (ZlibTooLarge)
+        logWarn("Declined a zip bomb of %.1f KB", raw.length / 1024.)
+        throw new HTTPStatusException(HTTPStatus.requestEntityTooLarge)
     catch (ZlibException e)
         logWarn("Zlib decompression error: %s", e.msg)
         throw new HTTPStatusException(HTTPStatus.badRequest)
-    catch (OutOfMemoryError)
-        logWarn("Declined a zip bomb of %.1f KB", raw.length / 1024.)
-        throw new HTTPStatusException(HTTPStatus.requestEntityTooLarge)
-
-    if (concatenated.length > 1 << 20)
-        logWarn("Declined a zip bomb of %.1f KB", raw.length / 1024.)
-        throw new HTTPStatusException(HTTPStatus.requestEntityTooLarge)
 
     logDiagnostic(
         "Decompressed %.1f KB -> %.1f KB (%.1fx)",
@@ -256,8 +263,7 @@ private DuelType _phaseToDuelType(const(char)[] phase) pure
         case "sail":
             return DuelType.sail
         default:
-            // Should not happen if parser validation is correct
-            return DuelType.sail
+            assert(false, "Unexpected duel phase")
 
 
 private void _validateV4Chronicle(const(char)[] chronicle)
@@ -292,3 +298,200 @@ private void _validateV4Chronicle(const(char)[] chronicle)
     logWarn("v4 chronicle: no step metadata markers found (data-t, d_turn div, or tN class)")
     throw new HTTPStatusException(HTTPStatus.badRequest,
         "v4 protocol requires per-line step metadata in chronicle")
+
+
+unittest
+    import std.base64
+    import zlib: compress
+
+    string makeBase64Payload(string text) @trusted
+        return cast(string)Base64.encode(cast(const(ubyte)[])compress(cast(const(void)[])text))
+
+    string[string] makeBaseForm(int protocolVersion)
+        return [
+            "protocolVersion": to!string(protocolVersion),
+            "timezone": "180",
+            "playerNumber": "2",
+            "agent": "unit-test",
+            "link": "https://godville.net/duels/log/ab123",
+            "stepDuration": "18",
+            "step": "7",
+        ]
+
+    auto form = makeBaseForm(3)
+    form["clientData"] = "{\"k\":1}"
+    form["data"] = makeBase64Payload("<div id='alls'></div><&><svg id='m'></svg><&><div class='new_line'>ok</div>")
+
+    const snap = _parseFromForm(form)
+    assert(snap.protocolVersion == 3)
+    assert(snap.duelType == DuelType.sail)
+    assert(snap.streamerIndex.get == 1)
+    assert(snap.clientData["k"].get!int == 1)
+
+
+unittest
+    import std.base64
+    import zlib: compress
+
+    string makeBase64Payload(string text) @trusted
+        return cast(string)Base64.encode(cast(const(ubyte)[])compress(cast(const(void)[])text))
+
+    string[string] form = [
+        "protocolVersion": "4",
+        "phase": "dungeon",
+        "timezone": "180",
+        "playerNumber": "1",
+        "agent": "unit-test",
+        "link": "https://godville.net/duels/log/ab124",
+        "stepDuration": "19",
+        "step": "11",
+        "clientData": "{\"theme\":\"dungeon\"}",
+    ]
+
+    form["data"] = makeBase64Payload(
+        "{" ~
+        "\"allies\":\"<div id='alls'></div>\"," ~
+        "\"map\":\"<div role='grid'></div>\"," ~
+        "\"chronicle\":\"<div class='new_line' data-t='1'></div>\"," ~
+        "\"conditions\":[\"A\",\"B\"]" ~
+        "}")
+
+    const snap = _parseFromForm(form)
+    assert(snap.protocolVersion == 4)
+    assert(snap.phase == "dungeon")
+    assert(snap.duelType == DuelType.dungeon)
+    assert(snap.conditions.length == 2)
+
+
+unittest
+    import std.base64
+    import zlib: compress
+
+    string makeBase64Payload(string text) @trusted
+        return cast(string)Base64.encode(cast(const(ubyte)[])compress(cast(const(void)[])text))
+
+    string[string] form = [
+        "protocolVersion": "4",
+        "phase": "raid",
+        "timezone": "180",
+        "playerNumber": "1",
+        "agent": "unit-test",
+        "link": "https://godville.net/duels/log/ab125",
+        "stepDuration": "19",
+        "step": "11",
+    ]
+    form["data"] = makeBase64Payload(
+        "{" ~
+        "\"allies\":\"<div id='alls'></div>\"," ~
+        "\"map\":\"<div role='grid'></div>\"," ~
+        "\"chronicle\":\"<div class='new_line' data-t='1'></div>\"" ~
+        "}")
+
+    bool thrown = false
+    try
+        _parseFromForm(form)
+    catch (HTTPStatusException)
+        thrown = true
+    assert(thrown)
+
+
+unittest
+    import std.base64
+    import zlib: compress
+
+    string makeBase64Payload(string text) @trusted
+        return cast(string)Base64.encode(cast(const(ubyte)[])compress(cast(const(void)[])text))
+
+    string[string] form = [
+        "protocolVersion": "3",
+        "timezone": "180",
+        "playerNumber": "2",
+        "agent": "unit-test",
+        "link": "https://godville.net/duels/log/ab126",
+        "stepDuration": "18",
+        "step": "8",
+        "clientData": "{}",
+        "data": makeBase64Payload("malformed payload"),
+    ]
+
+    bool thrown = false
+    try
+        _parseFromForm(form)
+    catch (HTTPStatusException)
+        thrown = true
+    assert(thrown)
+
+
+unittest
+    import std.base64
+    import std.conv: to
+    import zlib: compress
+
+    string makeBase64Payload(string text) @trusted
+        return cast(string)Base64.encode(cast(const(ubyte)[])compress(cast(const(void)[])text))
+
+    string makeConditionsJson(size_t n)
+        string result = "["
+        foreach (i; 0 .. n)
+            if (i)
+                result ~= ","
+            result ~= "\"c" ~ to!string(i) ~ "\""
+        result ~= "]"
+        return result
+
+    string[string] form = [
+        "protocolVersion": "4",
+        "phase": "boss",
+        "timezone": "180",
+        "playerNumber": "1",
+        "agent": "unit-test",
+        "link": "https://godville.net/duels/log/ab127",
+        "stepDuration": "18",
+        "step": "5",
+    ]
+
+    form["data"] = makeBase64Payload(
+        "{" ~
+        "\"allies\":\"<div id='alls'></div>\"," ~
+        "\"chronicle\":\"<div class='new_line' data-t='1'></div>\"," ~
+        "\"conditions\":" ~ makeConditionsJson(65) ~
+        "}")
+
+    bool thrown = false
+    try
+        _parseFromForm(form)
+    catch (HTTPStatusException)
+        thrown = true
+    assert(thrown)
+
+
+unittest
+    import std.base64
+    import zlib: compress
+
+    string makeBase64Payload(string text) @trusted
+        return cast(string)Base64.encode(cast(const(ubyte)[])compress(cast(const(void)[])text))
+
+    auto hugeBuf = new char[(1 << 20) + 128]
+    hugeBuf[] = 'A'
+    const huge = hugeBuf.idup
+    const payload = huge ~ _payloadSeparator ~ "<div role='grid'></div>" ~ _payloadSeparator ~ "<div class='new_line'>x</div>"
+
+    string[string] form = [
+        "protocolVersion": "3",
+        "timezone": "180",
+        "playerNumber": "2",
+        "agent": "unit-test",
+        "link": "https://godville.net/duels/log/ab128",
+        "stepDuration": "18",
+        "step": "9",
+        "clientData": "{}",
+        "data": makeBase64Payload(payload),
+    ]
+
+    bool thrown = false
+    try
+        _parseFromForm(form)
+    catch (HTTPStatusException)
+        thrown = true
+    assert(thrown)
