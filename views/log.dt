@@ -7,22 +7,39 @@ append head
   script(type="text/javascript",
     src="https://cdnjs.cloudflare.com/ajax/libs/pako/1.0.6/pako_inflate.min.js")
   - script("log");
-  script(type="text/javascript").
-    var gUpdatedAgo = #{ago};
-    var gStepDuration = #{log.stepDuration};
-    var gReporterClientData = !{log.clientData};
   - stylesheet("log");
 
 block body
-  .page_wrapper: #hero_block
+  - const isDungeon = log.duelType == typeof(log.duelType).dungeon;
+  - const isBoss = log.duelType == typeof(log.duelType).boss;
+
+  .page_wrapper(class=isBoss ? "layout-boss" : isDungeon ? "layout-dungeon" : "")
+    #hero_block(data-updated-ago=ago, data-step-duration=log.stepDuration, data-duel-type=log.duelType)
     .headnote
       a(href="#{log.host}/duels/log/#{log.id}", target="_blank") Прямая трансляция
 
-    #arena_columns
-      .m_small_col.group_wrapper
-        != log.allies
-        != log.chronicle
-      .m_large_col.group_wrapper
-        != log.map
+    - if (isDungeon)
+      #arena_columns
+        .m_small_col.group_wrapper
+          != log.allies
+        .m_large_col.group_wrapper
+          != log.map
+          .m_chronicle_wrapper.group_wrapper
+            != log.chronicle
+    - else if (isBoss)
+      #arena_columns
+        .m_small_col.group_wrapper
+          != log.allies
+        .m_large_col.group_wrapper
+          != log.chronicle
+        .m_boss_opp_col.group_wrapper
+          != log.opponent
+    - else
+      #arena_columns
+        .m_small_col.group_wrapper
+          != log.allies
+          != log.chronicle
+        .m_large_col.group_wrapper
+          != log.map
 
     .footnote Хроники хранятся 40 минут.

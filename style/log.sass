@@ -427,6 +427,13 @@ $m_small_col_width: 22%
     padding-left: 5px
     word-wrap: break-word
 
+.m_large_col
+  .d_msg
+    text-align: left
+    padding-left: 52px
+    word-wrap: break-word
+    white-space: pre-wrap
+
 .m_infl
   color: #38599A
 
@@ -452,6 +459,7 @@ $m_small_col_width: 22%
   height: 8px
   margin-left: 0
   float: left
+  transition: width .16s linear
   +border-radius(3px)
 
 .inv_block
@@ -714,3 +722,33 @@ $m_small_col_width: 22%
 @keyframes rotate
   100%
     transform: rotate(360deg)
+
+//Dungeon layout (allies + map on top, chronicle below map):
+.layout-dungeon
+  .m_large_col > .m_chronicle_wrapper
+    // Chronicle is nested into the same column as the map,
+    // so left/right edges always match exactly.
+    clear: both
+    box-sizing: border-box
+    width: 100%
+    margin: 0
+    padding: 0
+    min-height: 0
+
+  #arena_columns .group_wrapper
+    min-height: 0
+
+//Boss fight layout (allies | chronicle | opponent info):
+.layout-boss
+  .m_large_col
+    width: 56%
+
+  .m_boss_opp_col
+    float: left
+    box-sizing: border-box
+    width: 22%
+    padding: 0 0.4em
+    min-height: 400px
+
+  #arena_columns .group_wrapper
+    min-height: 0

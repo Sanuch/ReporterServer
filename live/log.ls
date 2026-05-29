@@ -57,29 +57,161 @@ progressTimer = 0
 runProgressTimer = (ago, stepDuration) !->
     percentsPerMillisecond = 0.1 / stepDuration
     basePoint = Date.now!
-    clearInterval progressTimer if progressTimer
-    setProgress Math.min ago *= percentsPerMillisecond * 1000, 100
-    progressTimer := every 0.25s, !->
+    if progressTimer
+        if window.cancelAnimationFrame?
+            cancelAnimationFrame progressTimer
+        else
+            clearInterval progressTimer
+        progressTimer := 0
+
+    ago = Math.min ago * percentsPerMillisecond * 1000, 100
+    setProgress ago
+
+    updateProgress = !->
         if (progress = ago + (Date.now! - basePoint) * percentsPerMillisecond) < 100 - 1e-5
             setProgress progress
+            yes
         else
             setProgress 100
-            clearInterval progressTimer
-            progressTimer := 0
+            no
+
+    if window.requestAnimationFrame?
+        tick = !->
+            if updateProgress!
+                progressTimer := requestAnimationFrame tick
+            else
+                progressTimer := 0
+        progressTimer := requestAnimationFrame tick
+    else
+        progressTimer := every 0.25s, !->
+            unless updateProgress!
+                clearInterval progressTimer
+                progressTimer := 0
 
 
-updatePage = ({allies, map, chronicle, clientData}) !->
+normalizeDuelType = (duelType) ->
+    return "" unless duelType?
+    normalized = ("#{duelType}".toLowerCase!)
+    if normalized == \boss || normalized == \dungeon || normalized == \sail
+        normalized
+    else
+        ""
+
+
+getOrCreateArenaColumn = (arena, className) ->
+    col = arena.getElementsByClassName className .0
+    unless col?
+        col = document.createElement \div
+        col.className = "#{className} group_wrapper"
+        arena.appendChild col
+    col
+
+
+clearNode = (node) !->
+    while node.firstChild?
+        node.removeChild node.firstChild
+
+
+escapeHtml = (value) ->
+    "#{if value? then value else ''}"
+        .replace /&/g, '&amp;'
+        .replace /</g, '&lt;'
+        .replace />/g, '&gt;'
+        .replace /"/g, '&quot;'
+        .replace /'/g, '&#39;'
+
+
+upsertBossBlock = (opponentHtml) ->
+    bossBlock = $id \s_boss
+    if opponentHtml? && opponentHtml.trim!.length
+        if bossBlock?
+            bossBlock.outerHTML = opponentHtml
+            bossBlock = $id \s_boss
+        else
+            wrapper = document.createElement \div
+            wrapper.innerHTML = opponentHtml
+            bossBlock = wrapper.firstElementChild
+
+    unless bossBlock?
+        bossBlock = document.createElement \div
+        bossBlock.id = \s_boss
+        bossBlock.className = \block
+        bossBlock.innerHTML = "
+            <div class=\"block_h\"><h2 class=\"block_title\">Босс</h2></div>
+            <div class=\"block_content\"><div class=\"line\">Нет данных о боссе</div></div>
+        "
+    bossBlock
+
+
+ensureArenaLayout = (duelType, opponent) !->
+    arena = $id \arena_columns
+    pageWrapper = $q \.page_wrapper
+    return unless arena? && pageWrapper?
+
+    alliesBlock = $id \alls
+    mapBlock = $id \s_map
+    chronicleBlock = $id \m_fight_log
+    return unless alliesBlock? && mapBlock? && chronicleBlock?
+    bossBlock = upsertBossBlock opponent
+
+    smallCol = getOrCreateArenaColumn arena, \m_small_col
+    largeCol = getOrCreateArenaColumn arena, \m_large_col
+    bossCol = arena.getElementsByClassName \m_boss_opp_col .0
+
+    pageWrapper.classList.toggle \layout-boss, duelType == \boss
+    pageWrapper.classList.toggle \layout-dungeon, duelType == \dungeon
+
+    switch duelType
+    | \boss
+        bossCol := getOrCreateArenaColumn arena, \m_boss_opp_col
+        clearNode smallCol
+        clearNode largeCol
+        clearNode bossCol
+        smallCol.appendChild alliesBlock
+        largeCol.appendChild chronicleBlock
+        mapBlock.style.display = \none
+        bossCol.appendChild mapBlock
+        bossCol.appendChild bossBlock
+    | \dungeon
+        clearNode smallCol
+        clearNode largeCol
+        smallCol.appendChild alliesBlock
+        mapBlock.style.display = ""
+        largeCol.appendChild mapBlock
+        chronicleWrapper = document.createElement \div
+        chronicleWrapper.className = "m_chronicle_wrapper group_wrapper"
+        chronicleWrapper.appendChild chronicleBlock
+        largeCol.appendChild chronicleWrapper
+        arena.removeChild bossCol if bossCol? && bossCol.parentNode == arena
+    | _
+        clearNode smallCol
+        clearNode largeCol
+        smallCol.appendChild alliesBlock
+        smallCol.appendChild chronicleBlock
+        mapBlock.style.display = ""
+        largeCol.appendChild mapBlock
+        arena.removeChild bossCol if bossCol? && bossCol.parentNode == arena
+
+
+updatePage = ({allies, map, chronicle, opponent, clientData, duelType}) !->
+    currentDuelType = normalizeDuelType if duelType? then duelType else window.gDuelType
     $id \alls .outerHTML = allies
 
-    $id \map_wrap
-        scrollValue = ..scrollLeft / ..scrollWidth
-    $id \s_map .outerHTML = map
-    $id \map_wrap
-        ..scrollLeft = scrollValue * ..scrollWidth
+    if $id \map_wrap
+        $id \map_wrap
+            scrollValue = ..scrollLeft / ..scrollWidth
+        $id \s_map .outerHTML = map
+        $id \map_wrap
+            ..scrollLeft = scrollValue * ..scrollWidth
+    else
+        $id \s_map .outerHTML = map
 
     $id \m_fight_log .outerHTML = chronicle
 
     window.gReporterClientData = clientData
+    if currentDuelType.length
+        window.gDuelType = currentDuelType
+    ensureArenaLayout currentDuelType, opponent
 
 
 checksumCache = { }
@@ -176,7 +308,7 @@ connect = !->
                 after retryEvery, connect
             else
                 location.replace url # `disconnect` is called from the `unload` handler.
-        else if response.step > getStep!
+        else if response.step > getStep! || normalizeDuelType(response.duelType) != normalizeDuelType(window.gDuelType)
             retryCount := 0 # Reset the counter.
             updatePage response
             postprocessPage!
