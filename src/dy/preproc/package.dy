@@ -232,11 +232,8 @@ private struct _Preprocessor
                 msgNode.appendChild(child)
 
     void processMap(Document doc)
-        if (snap.duelType == DuelType.dungeon)
-            processDungeonMap(doc)
-            return
-        if (snap.duelType == DuelType.boss)
-            processBossMap(doc)
+        if (snap.duelType == DuelType.dungeon || snap.duelType == DuelType.boss)
+            processStaticMap(doc)
             return
 
         import std.ascii: isDigit
@@ -405,21 +402,7 @@ private struct _Preprocessor
         if (prevTile !is null)
             du.updateTileTooltip(doc, prevTile, y, x, tileSize, prevTitleNode, player, snap.cargo)
 
-    void processDungeonMap(Document doc)
-        du.removeEverythingDangerous(doc)
-
-        //Normalize map ID: #map → #s_map for compatibility with client JS.
-        if (auto mapNode = doc.querySelector(_s!"#map"))
-            mapNode["id"] = "s_map"
-
-        //Remove control buttons from the header.
-        if (auto header = du.findHeader(doc))
-            du.removeControlButtons(header)
-
-        //Remove extra whitespace between tags.
-        du.removeExtraWhitespace(doc)
-
-    void processBossMap(Document doc)
+    void processStaticMap(Document doc)
         du.removeEverythingDangerous(doc)
 
         //Normalize map ID: #map → #s_map for compatibility with client JS.
