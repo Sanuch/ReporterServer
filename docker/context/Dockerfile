@@ -44,6 +44,11 @@ COPY --from=builder /gvrepsrv/static/ static/
 COPY --from=builder /gvrepsrv/views/ views/
 COPY supervisord.conf gvrepsrv.conf ./
 
-RUN mkdir -p logs
+RUN set -eux;                                              \
+    useradd --system --uid 10001 --home /nonexistent --shell /usr/sbin/nologin gvrepsrv; \
+    mkdir -p logs;                                         \
+    chown -R gvrepsrv:gvrepsrv /gvrepsrv
+
+USER gvrepsrv
 
 CMD ["supervisord", "--nodaemon", "-c", "/gvrepsrv/supervisord.conf"]
