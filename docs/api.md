@@ -15,6 +15,7 @@ determine which versions are supported by querying [`/api.json`][api.json].
 [v1]: #v1
 [v2]: #v2
 [v3]: #v3
+[v4]: #v4
 
 
 ## v1 ##
@@ -65,3 +66,31 @@ determine which versions are supported by querying [`/api.json`][api.json].
 + __clientData__ *(string)*: Arbitrary JSON-encoded data. The Reporter does not use it in any way,
   except for propagating to a stream page. It's available there as `window.gReporterClientData` and
   updates on each step. If you don't need this functionality, pass `null`.
+
+
+## v4 ##
+
++ __protocolVersion__ *(int)*: `4`.
++ __agent__ *(string)*: See [v1][].
++ __link__ *(string)*: See [v1][].
++ __stepDuration__ *(float)*: See [v1][].
++ __timezone__ *(int)*: See [v2][].
++ __step__ *(int)*: See [v1][].
++ __playerNumber__ *(int)*: See [v2][].
++ __cargo__ *(string, optional)*: See [v1][].
++ __phase__ *(string)*: Duel phase. Allowed values: `boss`, `dungeon`, `sail`.
++ __clientData__ *(string, optional)*: Arbitrary JSON-encoded data. Works the same way as in [v3][].
++ __data__ *(string)*: Base64-encoded payload compressed with *deflate* or *gzip*.
+  After decompression this field must contain JSON with:
+  + required `allies` *(string)*
+  + required `chronicle` *(string)*
+  + optional `map` *(string)*
+  + optional `opponent` *(string)*
+  + optional `conditions` *(array[string])*.
+
+Additional v4 validation rules:
++ For `dungeon` and `sail` phases, `data.map` is required.
++ `conditions` length is limited to 64 entries.
++ Each `conditions[]` string is limited to 256 bytes.
++ `data.opponent` is limited to 64 KiB.
++ If chronicle contains `new_line` rows, it must also contain per-line step metadata (`data-t`, `d_turn`, or `tN` class markers).
